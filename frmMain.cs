@@ -19,6 +19,10 @@ namespace RyanSync
 {
     public partial class frmMain : Form
     {
+        private bool UseDebugPath = true;
+        private bool ClearDictionarOnStart = true;
+        private string DebugPath = "c:\\temp";
+
         System.IO.Ports.SerialPort mySerialPort = new System.IO.Ports.SerialPort();
 
         public frmMain()
@@ -35,7 +39,7 @@ namespace RyanSync
             //select the last port.  (Lame solution.. for now it'll work though)
             mySerialPort.PortName = PortNames[PortNames.Length - 1];
 
-            for (int i = 0; i < PortNames.Length; i++ )
+            for (int i = 0; i < PortNames.Length; i++)
             {
                 PortNumber = int.Parse(PortNames[i].Substring(3, PortNames[i].Length - 3));
                 if (PortNumber > HighestPortNumber) {
@@ -52,6 +56,17 @@ namespace RyanSync
             lblNotification.Text = "";
             refreshServer();
             //refreshFrame();
+
+            //read dictionary from the file:
+            if (ClearDictionarOnStart)
+            {
+                FileNamesTable = new Dictionary<string, string>();
+            }
+            else
+            {
+                FileNamesTable = ReadDictionary(DictionaryPath);
+            }
+
 
             FileInfo fi = new FileInfo(@"framefiles.cache");
             if (fi.Exists)
@@ -74,6 +89,9 @@ namespace RyanSync
         private string frameDriveLetter = "";
         private DirectoryInfo frameDirectory = null;
         private string[] frameFiles = null;
+        private Dictionary<string,string> FileNamesTable = new Dictionary<string, string>();
+        private string[] ServerFileNames = new string[1000];
+        string DictionaryPath = System.IO.Path.Combine(Application.StartupPath, "Dictionary.bin");
 
         private void setupAuthorization(HttpWebRequest rq)
         {
@@ -229,6 +247,23 @@ namespace RyanSync
             }
         }
 
+        private string GetNewFileName(string OldName, string FileDate)
+        {
+            FileInfo fi = new FileInfo(OldName);
+
+            int offset = 0;
+            for (offset = 0; offset < 999; offset++)
+            {
+                string newname = FileDate + offset.ToString("000") + fi.Extension;
+                if (!FileNamesTable.ContainsValue(newname))
+                {
+
+                    return newname;
+                }
+            }
+            return "errorname";
+        }
+
         private void refreshFrameAndAsk()
         {
             if (!refreshFrame())
@@ -242,27 +277,36 @@ namespace RyanSync
         {
             try
             {
-                var frameDrive = (
+
+                if (!UseDebugPath)
+                {
+                    var frameDrive = (
                     from drv in System.IO.DriveInfo.GetDrives()
                     where drv.IsReady   // must be first check or else "Drive Not Ready" exception is thrown
                     where drv.DriveType == DriveType.Removable
                     where drv.VolumeLabel == Properties.Settings.Default.DigitalFrameLabel
                     select drv
-                ).SingleOrDefault();
-                if (frameDrive == null)
-                    return false;
+                    ).SingleOrDefault();
 
-                //retrive drive letter:
-                frameDriveLetter = frameDrive.Name.Substring(0, 1);
+                    if (frameDrive == null)
+                        return false;
 
-                // Now find the dedicated subdirectory (currently only one level deep allowed):
-                frameDirectory = (
-                    from dir in frameDrive.RootDirectory.GetDirectories()
-                    where String.Compare(dir.Name, Properties.Settings.Default.DigitalFrameSubdirectory, true) == 0
-                    select dir
-                ).SingleOrDefault();
+                    //retrive drive letter:
+                    frameDriveLetter = frameDrive.Name.Substring(0, 1);
 
-                if (frameDirectory == null) frameDirectory = frameDrive.RootDirectory;
+                    // Now find the dedicated subdirectory (currently only one level deep allowed):
+                    frameDirectory = (
+                        from dir in frameDrive.RootDirectory.GetDirectories()
+                        where String.Compare(dir.Name, Properties.Settings.Default.DigitalFrameSubdirectory, true) == 0
+                        select dir
+                    ).SingleOrDefault();
+
+                    if (frameDirectory == null) frameDirectory = frameDrive.RootDirectory;
+                }
+                else
+                {
+                    frameDirectory = new DirectoryInfo(DebugPath);
+                }
 
                 if (!frameDirectory.Exists) return false;
 
@@ -331,21 +375,24 @@ namespace RyanSync
                 return false;
             }
 
-            try
+            if (!UseDebugPath)
             {
-                if (!mySerialPort.IsOpen)
+                try
                 {
-                    mySerialPort.Open();
-                    System.Threading.Thread.Sleep(1000);        //give it a second to open the port before doing anything..
+                    if (!mySerialPort.IsOpen)
+                    {
+                        mySerialPort.Open();
+                        System.Threading.Thread.Sleep(1000);        //give it a second to open the port before doing anything..
+                    }
+                    mySerialPort.DtrEnable = false;              //Connect
+                    mySerialPort.RtsEnable = true;             //Connect
+                    System.Threading.Thread.Sleep(15000);        //give it a LONG WHILE to find all the drives before doing anything..
                 }
-                mySerialPort.DtrEnable = false;              //Connect
-                mySerialPort.RtsEnable = true;             //Connect
-                System.Threading.Thread.Sleep(15000);        //give it a LONG WHILE to find all the drives before doing anything..
-            }
-            catch (Exception ex)
-            {
-                lblNotification.Text = "Failed to open RS232 port. Error:" + ex.Message;
-                return false;
+                catch (Exception ex)
+                {
+                    lblNotification.Text = "Failed to open RS232 port. Error:" + ex.Message;
+                    return false;
+                }
             }
 
             refreshFrameAndAsk();
@@ -355,6 +402,25 @@ namespace RyanSync
                 Application.DoEvents();
                 DisconnectFromDrive(frameDriveLetter);
                 return false;
+            }
+
+
+            ServerFileNames = new string[1000];             //max of 1000 files.. because I'm lazy
+            //get appropriate names for each of the server files:
+            int i;
+            i = 0;
+            foreach (string file in serverFiles)
+            {
+                if (FileNamesTable.ContainsKey(file))
+                {
+                    //We have a key for this server file.  Replace the name with the appropriate name:
+                    ServerFileNames[i++] = FileNamesTable[file];
+                }
+                else
+                {
+                    //We don't have a replacement name for this file.. just add it as is.  (We'll rename it as we download it)
+                    ServerFileNames[i++] = file;
+                }
             }
 
             bool RemovedFileFromFrame = false;
@@ -434,6 +500,29 @@ namespace RyanSync
                             CopyStream(rsp.GetResponseStream(), fi);
                             fi.Close();
                         }
+
+                        //Correct the modified date to the date we got from the server:
+                        File.SetLastWriteTime(System.IO.Path.Combine(frameDirectory.FullName, fileName), rsp.LastModified);
+
+                        //Correct the creation date to the date we got from the server:
+                        File.SetCreationTime(System.IO.Path.Combine(frameDirectory.FullName, fileName), rsp.LastModified);
+
+                        //Check if we already have a proper name for this server file:
+                        if (!FileNamesTable.ContainsKey(fileName))
+                        {
+                            //FileInfo fileinfo = new FileInfo(System.IO.Path.Combine(frameDirectory.FullName, fileName));
+                            //string filedate = fileinfo.LastWriteTime.ToString("yyMMddhhmmss");
+                            string filedate = rsp.LastModified.ToString("yyMMddhhmm");
+
+                            //string filedate = GetDateTakenFromImage(System.IO.Path.Combine(frameDirectory.FullName, fileName)).ToString("yyMMddhhmmss");
+                            string newname = GetNewFileName(fileName, filedate);
+                            FileNamesTable[fileName] = newname;
+
+                            WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file so we don't lose this file name
+                        }
+
+                        //rename the file using the new name:
+                        File.Move(System.IO.Path.Combine(frameDirectory.FullName, fileName), System.IO.Path.Combine(frameDirectory.FullName, FileNamesTable[fileName]));
 
                         // Add the filename to the frame's list:
                         UIBlockingInvoke(new MethodInvoker(delegate()
@@ -642,6 +731,59 @@ namespace RyanSync
         private void deleteToolStripMenuItem_Click(object sender, EventArgs e)
         {
 
+        }
+
+
+        static void WriteDictionary(Dictionary<string, string> dictionary, string file)
+        {
+            using (FileStream fs = File.OpenWrite(file))
+            using (BinaryWriter writer = new BinaryWriter(fs))
+            {
+                // Put count.
+                writer.Write(dictionary.Count);
+                // Write pairs.
+                foreach (var pair in dictionary)
+                {
+                    writer.Write(pair.Key);
+                    writer.Write(pair.Value);
+                }
+            }
+        }
+
+        static Dictionary<string, string> ReadDictionary(string file)
+        {
+            var result = new Dictionary<string, string>();
+            using (FileStream fs = File.OpenRead(file))
+            using (BinaryReader reader = new BinaryReader(fs))
+            {
+                // Get count.
+                int count = reader.ReadInt32();
+                // Read in all pairs.
+                for (int i = 0; i < count; i++)
+                {
+                    string key = reader.ReadString();
+                    string value = reader.ReadString();
+                    result[key] = value;
+                }
+            }
+            return result;
+        }
+
+
+        //we init this once so that if the function is repeatedly called
+        //it isn't stressing the garbage man
+        private static System.Text.RegularExpressions.Regex r = new System.Text.RegularExpressions.Regex(":");
+
+        //retrieves the datetime WITHOUT loading the whole image
+        public static DateTime GetDateTakenFromImage(string path)
+        {
+            using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read))
+            using (Image myImage = Image.FromStream(fs, false, false))
+            {
+                System.Drawing.Imaging.PropertyItem propItem = myImage.GetPropertyItem(36867);
+                string dateTaken = r.Replace(Encoding.UTF8.GetString(propItem.Value), "-", 2);
+                return DateTime.Parse(dateTaken);
+            }
         }
     }
 }
