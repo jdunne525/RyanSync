@@ -20,7 +20,7 @@ namespace RyanSync
     public partial class frmMain : Form
     {
         private bool UseDebugPath = true;
-        private bool ClearDictionarOnStart = true;
+        private bool ClearDictionarOnStart = false;
         private string DebugPath = "c:\\temp";
 
         System.IO.Ports.SerialPort mySerialPort = new System.IO.Ports.SerialPort();
@@ -424,16 +424,23 @@ namespace RyanSync
             }
 
             bool RemovedFileFromFrame = false;
+            List<string> FrameFileOriginalNames = new List<string>();
             //Delete files off the frame if they are not on the Server:
             foreach (string FrameFile in frameFiles)
             {
+
                 bool FileExistsOnServer = false;
 
                 foreach (string serverfile in serverFiles)
                 {
-                    if (FrameFile == serverfile)
+                    if (FileNamesTable.ContainsKey(serverfile))
                     {
-                        FileExistsOnServer = true;
+                        if (FrameFile == FileNamesTable[serverfile])
+                        {
+                            FileExistsOnServer = true;
+                            FrameFileOriginalNames.Add(serverfile);
+                            break;
+                        }
                     }
                 }
 
@@ -450,9 +457,9 @@ namespace RyanSync
                 //Refresh frame file listing if we deleted something off the frame:
                 refreshFrameAndAsk();
             }
-
+            
             // Pick only new files from the server:
-            var toSync = serverFiles.Except(frameFiles).ToList();
+            var toSync = serverFiles.Except(FrameFileOriginalNames).ToList();
             if (toSync.Count == 0)
             {
                 //MessageBox.Show(this, "Completed", "Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -518,7 +525,8 @@ namespace RyanSync
                             string newname = GetNewFileName(fileName, filedate);
                             FileNamesTable[fileName] = newname;
 
-                            WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file so we don't lose this file name
+                            //can't do this here because we'll get file lock issues since this is multi threaded.
+                            //WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file so we don't lose this file name
                         }
 
                         //rename the file using the new name:
@@ -555,6 +563,9 @@ namespace RyanSync
                                 System.Threading.Thread.Sleep(5000);     //give time to finish writing
 
                                 DisconnectFromDrive(frameDriveLetter);
+
+                                WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file
+
                                 btnSync.Enabled = true;
                                 shouldSync = false;     //Clear this only after the entire sync operation has completed.
                             }));
@@ -567,6 +578,9 @@ namespace RyanSync
 
         private void DisconnectFromDrive(string frameDriveLetter)
         {
+
+            if (UseDebugPath) return;
+
             //Eject the USB drive:
             EjectUSBDrive(frameDriveLetter + ":");
             System.Threading.Thread.Sleep(10000);     //give time to eject
