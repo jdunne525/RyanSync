@@ -21,7 +21,7 @@ namespace RyanSync
     {
 
         //Server:
-        private string ServerPath = "G:\\DropBox\\Photos";
+        private string ServerPath = "C:\\Users\\jdunne\\Documents\\Dropbox\\Photos";
         private string[] serverFiles = null;
 
         //Frame:
@@ -34,7 +34,7 @@ namespace RyanSync
         string DictionaryPath = System.IO.Path.Combine(Application.StartupPath, "Dictionary.bin");
 
 
-        private bool UseDebugPath = true;
+        private bool UseDebugPath = false;
         private bool ClearDictionarOnStart = false;
         private string DebugPath = "c:\\temp";
 
@@ -131,12 +131,17 @@ namespace RyanSync
             sw.Write(servercache);
             sw.Close();
 
-            string framecache = File.ReadAllText(@"framefiles.cache");
-            if (framecache != servercache)
+            FileInfo fcache = new FileInfo(@"framefiles.cache");
+            if (fcache.Exists)
             {
-                return true;
+                string framecache = File.ReadAllText(@"framefiles.cache");
+                if (framecache != servercache)
+                {
+                    return true;
+                }
+                else return false;
             }
-            else return false;
+            else return true;
 
         }
 
