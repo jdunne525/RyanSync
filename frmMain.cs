@@ -19,6 +19,21 @@ namespace RyanSync
 {
     public partial class frmMain : Form
     {
+
+        //Server:
+        private string ServerPath = "G:\\DropBox\\Photos";
+        private string[] serverFiles = null;
+
+        //Frame:
+        private string frameDriveLetter = "";
+        private DirectoryInfo frameDirectory = null;
+        private DirectoryInfo serverDirectory = null;
+        private string[] frameFiles = null;
+        private Dictionary<string, string> FileNamesTable = new Dictionary<string, string>();
+        private string[] ServerFileNames = new string[1000];
+        string DictionaryPath = System.IO.Path.Combine(Application.StartupPath, "Dictionary.bin");
+
+
         private bool UseDebugPath = true;
         private bool ClearDictionarOnStart = false;
         private string DebugPath = "c:\\temp";
@@ -36,25 +51,30 @@ namespace RyanSync
             int HighestIndex = 0;
             int PortNumber = 1;
             string[] PortNames = System.IO.Ports.SerialPort.GetPortNames();
-            //select the last port.  (Lame solution.. for now it'll work though)
-            mySerialPort.PortName = PortNames[PortNames.Length - 1];
 
-            for (int i = 0; i < PortNames.Length; i++)
+            if (PortNames.Length > 0)
             {
-                PortNumber = int.Parse(PortNames[i].Substring(3, PortNames[i].Length - 3));
-                if (PortNumber > HighestPortNumber) {
-                    HighestPortNumber = PortNumber;
-                    HighestIndex = i;
-                }
-            }
+                //select the last port.  (Lame solution.. for now it'll work though)
+                mySerialPort.PortName = PortNames[PortNames.Length - 1];
 
-            mySerialPort.PortName = PortNames[HighestIndex];
+                for (int i = 0; i < PortNames.Length; i++)
+                {
+                    PortNumber = int.Parse(PortNames[i].Substring(3, PortNames[i].Length - 3));
+                    if (PortNumber > HighestPortNumber)
+                    {
+                        HighestPortNumber = PortNumber;
+                        HighestIndex = i;
+                    }
+                }
+
+                mySerialPort.PortName = PortNames[HighestIndex];
+            }
 
             pgbUpdateProgress.Visible = false;
             tmrUpdate.Enabled = true;
             tmrUpdate.Interval = 900000;
             lblNotification.Text = "";
-            refreshServer();
+            refreshServerSync();
             //refreshFrame();
 
             //read dictionary from the file:
@@ -82,169 +102,42 @@ namespace RyanSync
             }
         }
 
-        private Uri serverBaseUri = null;
-        private string[] serverFiles = null;
-        private bool shouldSync = false;
-
-        private string frameDriveLetter = "";
-        private DirectoryInfo frameDirectory = null;
-        private string[] frameFiles = null;
-        private Dictionary<string,string> FileNamesTable = new Dictionary<string, string>();
-        private string[] ServerFileNames = new string[1000];
-        string DictionaryPath = System.IO.Path.Combine(Application.StartupPath, "Dictionary.bin");
-
-        private void setupAuthorization(HttpWebRequest rq)
-        {
-            rq.Credentials = new NetworkCredential("ryan", "iscute");
-        }
-
-        private void refreshServer()
-        {
-            Uri listUri = Properties.Settings.Default.ListURL;
-
-            lblServer.Text = "Server (" + listUri.AbsoluteUri + "):";
-
-            // Request the list JSON object:
-            HttpWebRequest rq = (HttpWebRequest)HttpWebRequest.Create(listUri);
-            setupAuthorization(rq);
-
-            // Asynchronously get the response from the URI:
-            rq.BeginGetResponse(new AsyncCallback((ar) =>
-            {
-                HttpWebRequest myRq = (HttpWebRequest)ar.AsyncState;
-                try
-                {
-                    HttpWebResponse rsp = (HttpWebResponse)myRq.EndGetResponse(ar);
-
-                    //This should not clear shouldSync.  It should only Set it.  
-                    //shouldSync should only be cleared once the frame has been updated.
-                    handleServerResponse(myRq, rsp);
-                }
-                catch (Exception ex)
-                {
-                    Trace.WriteLine(ex.ToString());
-
-                    //Dispatcher.Invoke((Action)(() =>
-                    UIBlockingInvoke(new MethodInvoker(delegate()
-                    {
-                        //MessageBox.Show(this, ex.Message, "Server Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        lblNotification.Text = "Server Error";
-                    }));
-
-                }
-            }), rq);
-        }
-
         /// <summary>
         /// 
         /// </summary>
         /// <returns>Returns internal variable shouldSync indicating whether the frame needs to be be synced or not.</returns>
         private bool refreshServerSync()
         {
-            try
+
+            serverDirectory = new DirectoryInfo(ServerPath);
+            if (!serverDirectory.Exists) return false;
+
+            serverFiles = (
+                from fi in serverDirectory.GetFiles()
+                orderby fi.Name ascending
+                select fi.Name
+            ).ToArray();
+
+            StringBuilder sb = new StringBuilder();
+            StreamWriter sw = File.CreateText(@"serverfiles.cache");
+
+            lstServer.Items.Clear();
+            foreach (var name in serverFiles)
             {
-                Uri listUri = Properties.Settings.Default.ListURL;
-
-                lblServer.Text = "Server (" + listUri.AbsoluteUri + "):";
-
-                // Request the list JSON object:
-                HttpWebRequest rq = (HttpWebRequest)HttpWebRequest.Create(listUri);
-                setupAuthorization(rq);
-
-                HttpWebResponse rsp = (HttpWebResponse)rq.GetResponse();
-
-                return handleServerResponse(rq, rsp);
+                lstServer.Items.Add(name);
+                sb.AppendLine(name);            //cache frame files
             }
-            catch (Exception ex)
+            string servercache = sb.ToString();
+            sw.Write(servercache);
+            sw.Close();
+
+            string framecache = File.ReadAllText(@"framefiles.cache");
+            if (framecache != servercache)
             {
-                UIBlockingInvoke(new MethodInvoker(delegate()
-                {
-                    lblNotification.Text = "Fail:" + ex.Message;
-                }));
-                return false;
+                return true;
             }
-        }
+            else return false;
 
-        private bool handleServerResponse(HttpWebRequest req, HttpWebResponse rsp)
-        {
-            using (var ms = new MemoryStream())
-            {
-                // Copy the response stream to our MemoryStream:
-                CopyStream(rsp.GetResponseStream(), ms);
-
-                bool doSync = true;
-
-                var cachedFileInfo = new FileInfo(@"cached.json");
-
-                if (!cachedFileInfo.Exists)
-                {
-                    // Cache the response:
-                    using (var fs = File.Create(cachedFileInfo.FullName, 8192, FileOptions.WriteThrough))
-                    {
-                        ms.Seek(0L, SeekOrigin.Begin);
-                        CopyStream(ms, fs);
-                    }
-                }
-                else
-                {
-                    // Check the diff between the last cached response and the current response:
-                    if (ms.Length != cachedFileInfo.Length)
-                    {
-                        // Length changed, obvious indication that sync is needed:
-                        doSync = true;
-                    }
-                    else
-                    {
-                        doSync = false;
-
-                        // Read the cached response into memory and compare byte-by-byte with the latest response:
-                        byte[] cached = File.ReadAllBytes(cachedFileInfo.FullName);
-                        byte[] actual = ms.ToArray();
-
-                        // If any of the bytes are not equal, do synchronization:
-                        doSync = Enumerable.Range(0, cached.Length).Any(i => cached[i] != actual[i]);
-                    }
-                }
-
-                if (doSync)
-                {
-                    // Cache the response if it's different than previous cache.
-                    using (var fs = File.Create(cachedFileInfo.FullName, 8192, FileOptions.WriteThrough))
-                    {
-                        ms.Seek(0L, SeekOrigin.Begin);
-                        CopyStream(ms, fs);
-                    }
-                }
-
-
-                // Deserialize the JSON response into our data contract:
-                ms.Seek(0L, SeekOrigin.Begin);
-                var files = (FileList)new DataContractJsonSerializer(typeof(FileList)).ReadObject(ms);
-                serverBaseUri = new Uri(files.BaseUrl);
-                serverFiles = (
-                    from f in files.FileNames
-                    orderby f ascending
-                    select f
-                ).ToArray();
-
-                // Add the filenames to the list:
-                //Dispatcher.Invoke((Action)(() =>
-                UIBlockingInvoke(new MethodInvoker(delegate()
-                {
-                    lstServer.Items.Clear();
-                    foreach (string fileName in serverFiles)
-                    {
-                        lstServer.Items.Add(fileName);
-                    }
-                }));
-
-                if (doSync)
-                {
-                    shouldSync = true;
-                }
-
-                return shouldSync;
-            }
         }
 
         private string GetNewFileName(string OldName, string FileDate)
@@ -336,7 +229,7 @@ namespace RyanSync
             {
                 Trace.WriteLine(ex.ToString());
                 //Dispatcher.Invoke((Action)(() =>
-                UIBlockingInvoke(new MethodInvoker(delegate()
+                UIBlockingInvoke(new MethodInvoker(delegate ()
                 {
                     //MessageBox.Show(this, ex.Message, "Client Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     lblNotification.Text = "Client Error";
@@ -457,7 +350,7 @@ namespace RyanSync
                 //Refresh frame file listing if we deleted something off the frame:
                 refreshFrameAndAsk();
             }
-            
+
             // Pick only new files from the server:
             var toSync = serverFiles.Except(FrameFileOriginalNames).ToList();
             if (toSync.Count == 0)
@@ -466,7 +359,6 @@ namespace RyanSync
                 lblNotification.Text = "Frame is already up to date.";
                 Application.DoEvents();
                 DisconnectFromDrive(frameDriveLetter);
-                shouldSync = false;
                 return true;
             }
 
@@ -483,95 +375,68 @@ namespace RyanSync
             foreach (string name in toSync)
             {
                 string fileName = name;
-                Uri fileUri = new Uri(serverBaseUri, fileName);
-
-                // Request the file from the server:
-                HttpWebRequest rq = (HttpWebRequest)HttpWebRequest.Create(fileUri);
-                setupAuthorization(rq);
-
-                // Asynchronously get the response:
-                rq.BeginGetResponse(new AsyncCallback((ar) =>
+                try
                 {
-                    HttpWebRequest myRq = (HttpWebRequest)ar.AsyncState;
+                    FileInfo serverfile = new FileInfo(System.IO.Path.Combine(serverDirectory.ToString(), fileName));
 
-                    try
+                    serverfile.CopyTo(System.IO.Path.Combine(frameDirectory.FullName, fileName));
+
+                    //Check if we already have a proper name for this server file:
+                    if (!FileNamesTable.ContainsKey(fileName))
                     {
-                        HttpWebResponse rsp = (HttpWebResponse)myRq.EndGetResponse(ar);
+                        //FileInfo fileinfo = new FileInfo(System.IO.Path.Combine(frameDirectory.FullName, fileName));
+                        string filedate = serverfile.LastWriteTime.ToString("yyMMddhhmmss");
+                        //string filedate = serverfile.LastWriteTime.ToString("yyMMddhhmm");
 
-                        // Download the content into a file:
-                        using (FileStream fi = File.Open(System.IO.Path.Combine(frameDirectory.FullName, fileName), FileMode.Create, FileAccess.Write, FileShare.Read))
-                        {
-                            // Allocate enough space to store the file:
-                            fi.SetLength(rsp.ContentLength);
-                            // Copy:
-                            CopyStream(rsp.GetResponseStream(), fi);
-                            fi.Close();
-                        }
+                        //string filedate = GetDateTakenFromImage(System.IO.Path.Combine(frameDirectory.FullName, fileName)).ToString("yyMMddhhmmss");
+                        string newname = GetNewFileName(fileName, filedate);
+                        FileNamesTable[fileName] = newname;
 
-                        //Correct the modified date to the date we got from the server:
-                        File.SetLastWriteTime(System.IO.Path.Combine(frameDirectory.FullName, fileName), rsp.LastModified);
-
-                        //Correct the creation date to the date we got from the server:
-                        File.SetCreationTime(System.IO.Path.Combine(frameDirectory.FullName, fileName), rsp.LastModified);
-
-                        //Check if we already have a proper name for this server file:
-                        if (!FileNamesTable.ContainsKey(fileName))
-                        {
-                            //FileInfo fileinfo = new FileInfo(System.IO.Path.Combine(frameDirectory.FullName, fileName));
-                            //string filedate = fileinfo.LastWriteTime.ToString("yyMMddhhmmss");
-                            string filedate = rsp.LastModified.ToString("yyMMddhhmm");
-
-                            //string filedate = GetDateTakenFromImage(System.IO.Path.Combine(frameDirectory.FullName, fileName)).ToString("yyMMddhhmmss");
-                            string newname = GetNewFileName(fileName, filedate);
-                            FileNamesTable[fileName] = newname;
-
-                            //can't do this here because we'll get file lock issues since this is multi threaded.
-                            //WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file so we don't lose this file name
-                        }
-
-                        //rename the file using the new name:
-                        File.Move(System.IO.Path.Combine(frameDirectory.FullName, fileName), System.IO.Path.Combine(frameDirectory.FullName, FileNamesTable[fileName]));
-
-                        // Add the filename to the frame's list:
-                        UIBlockingInvoke(new MethodInvoker(delegate()
-                        {
-                            lstFolder.Items.Add(fileName);
-                            pgbUpdateProgress.Value++;
-                        }));
+                        //can't do this here because we'll get file lock issues since this is multi threaded.
+                        //WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file so we don't lose this file name
                     }
-                    catch (Exception ex)
+
+                    //rename the file using the new name:
+                    File.Move(System.IO.Path.Combine(frameDirectory.FullName, fileName), System.IO.Path.Combine(frameDirectory.FullName, FileNamesTable[fileName]));
+
+                    // Add the filename to the frame's list:
+                    UIBlockingInvoke(new MethodInvoker(delegate ()
                     {
-                        Trace.WriteLine(ex.ToString());
-                        UIBlockingInvoke(new MethodInvoker(delegate()
-                        {
-                            lstFolder.Items.Add(fileName + " (ERROR: " + ex.Message + ")");
-                        }));
-                    }
-                    finally
+                        lstFolder.Items.Add(fileName);
+                        pgbUpdateProgress.Value++;
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    Trace.WriteLine(ex.ToString());
+                    UIBlockingInvoke(new MethodInvoker(delegate ()
                     {
-                        // Increment the number of files synchronized:
-                        if (Interlocked.Increment(ref filesSynchronizing) == filesToSynchronize)
+                        lstFolder.Items.Add(fileName + " (ERROR: " + ex.Message + ")");
+                    }));
+                }
+                finally
+                {
+                    // Increment the number of files synchronized:
+                    if (Interlocked.Increment(ref filesSynchronizing) == filesToSynchronize)
+                    {
+                        // If we're last in line, re-enable the sync button:
+                        UIBlockingInvoke(new MethodInvoker(delegate ()
                         {
-                            // If we're last in line, re-enable the sync button:
-                            UIBlockingInvoke(new MethodInvoker(delegate()
-                            {
-                                pgbUpdateProgress.Visible = false;
+                            pgbUpdateProgress.Visible = false;
                                 //MessageBox.Show(this, "Completed", "Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
                                 lblNotification.Text = DateTime.Now.ToString("HH:mm tt") + " Completed Successfully";
-                                Application.DoEvents();
+                            Application.DoEvents();
 
-                                System.Threading.Thread.Sleep(5000);     //give time to finish writing
+                            System.Threading.Thread.Sleep(5000);     //give time to finish writing
 
                                 DisconnectFromDrive(frameDriveLetter);
 
-                                WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file
+                            WriteDictionary(FileNamesTable, DictionaryPath);        //save the dictionary to file
 
                                 btnSync.Enabled = true;
-                                shouldSync = false;     //Clear this only after the entire sync operation has completed.
-                            }));
-                        }
+                        }));
                     }
-                }), rq);
+                }
             }
             return true;
         }
@@ -645,7 +510,7 @@ namespace RyanSync
             UIAsyncComplete.Reset();
             if (this.InvokeRequired)
             {
-                this.BeginInvoke(new MethodInvoker(delegate()
+                this.BeginInvoke(new MethodInvoker(delegate ()
                 {
                     try
                     {
